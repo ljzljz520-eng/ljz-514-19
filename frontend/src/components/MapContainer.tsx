@@ -1,6 +1,6 @@
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer as LeafletMap, Marker, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
 import marker2x from "leaflet/dist/images/marker-icon-2x.png";
 import marker from "leaflet/dist/images/marker-icon.png";
@@ -53,6 +53,103 @@ function FocusNodeEffect({ markerRefs }: { markerRefs: { current: Map<string, L.
   return null;
 }
 
+/**
+ * 底图图层：
+ * - 优先使用在线 OSM 瓦片；
+ * - 连续瓦片加载失败（离线 / 外网受限）时自动切换到 public/tiles 内置离线瓦片；
+ * - 浏览器重新联网后自动切回在线图层。
+ * 离线瓦片覆盖范围见 public/tiles/README.md（重庆市区 z8–z14），覆盖范围外用透明瓦片兜底，
+ * 不影响节点、路线等矢量要素的展示。
+ */
+const ONLINE_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const OFFLINE_TILE_URL = `${import.meta.env.BASE_URL}tiles/{z}/{x}/{y}.png`;
+const TRANSPARENT_TILE_URL = `${import.meta.env.BASE_URL}tiles/transparent.png`;
+const ONLINE_FAIL_THRESHOLD = 4;
+const OFFLINE_BASEMAP_EVENT = "cqtravel:offline-basemap";
+
+function isOfflineCapableBrowser() {
+  return typeof navigator !== "undefined" && (!navigator.onLine || window.location.protocol === "file:");
+}
+
+function BaseLayer() {
+  const [useOffline, setUseOffline] = useState(isOfflineCapableBrowser);
+  const failCountRef = useRef(0);
+
+  useEffect(() => {
+    const goOnline = () => {
+      failCountRef.current = 0;
+      setUseOffline(false);
+    };
+    const goOffline = () => setUseOffline(true);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+
+  if (useOffline) {
+    return (
+      <TileLayer
+        key="offline"
+        attribution="离线底图瓦片 © OpenStreetMap contributors"
+        url={OFFLINE_TILE_URL}
+        maxNativeZoom={14}
+        minZoom={8}
+        maxZoom={18}
+        errorTileUrl={TRANSPARENT_TILE_URL}
+      />
+    );
+  }
+
+  return (
+    <TileLayer
+      key="online"
+      attribution="&copy; OpenStreetMap contributors"
+      url={ONLINE_TILE_URL}
+      maxZoom={18}
+      eventHandlers={{
+        tileerror: () => {
+          failCountRef.current += 1;
+          if (failCountRef.current >= ONLINE_FAIL_THRESHOLD) {
+            setUseOffline(true);
+            window.dispatchEvent(new Event(OFFLINE_BASEMAP_EVENT));
+          }
+        },
+        tileload: () => {
+          failCountRef.current = 0;
+        },
+      }}
+    />
+  );
+}
+
+function BaseLayerStatus() {
+  const [offline, setOffline] = useState(isOfflineCapableBrowser);
+
+  useEffect(() => {
+    const update = () => setOffline(isOfflineCapableBrowser());
+    const useOfflineFallback = () => setOffline(true);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    window.addEventListener(OFFLINE_BASEMAP_EVENT, useOfflineFallback);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+      window.removeEventListener(OFFLINE_BASEMAP_EVENT, useOfflineFallback);
+    };
+  }, []);
+
+  if (!offline) return null;
+
+  return (
+    <div className="pointer-events-none absolute right-3 top-3 z-[1000] rounded-full bg-slate-900/80 px-3 py-1 text-xs font-medium text-white shadow-lg">
+      离线底图
+    </div>
+  );
+}
+
 export default function MapContainer() {
   const nodes = useTravelStore((s) => s.nodes);
   const startId = useTravelStore((s) => s.startId);
@@ -97,11 +194,9 @@ export default function MapContainer() {
   }, [route]);
 
   return (
-    <LeafletMap center={center} zoom={12} className="h-full w-full">
-      <TileLayer
-        attribution="&copy; OpenStreetMap contributors"
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
+    <LeafletMap center={center} zoom={12} minZoom={8} maxZoom={18} className="h-full w-full">
+      <BaseLayer />
+      <BaseLayerStatus />
 
       {nodes.map((n) => {
         const isStart = n.id === startId;

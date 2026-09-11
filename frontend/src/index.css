@@ -13,6 +13,11 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 离线瓦片覆盖范围外仍保留统一地图底色，避免空白灰屏 */
+.leaflet-container {
+  background: #e8f1f7;
+}
+
 /* 路线步骤定位闪烁（点击地图景点 / 景点卡片后触发） */
 @keyframes route-step-flash {
   0%,
